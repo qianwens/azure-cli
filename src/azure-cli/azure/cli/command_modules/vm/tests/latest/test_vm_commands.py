@@ -1412,7 +1412,7 @@ class VMSSExtensionInstallTest(ScenarioTest):
                  '--protected-settings "{config_file}" --extension-instance-name {ext_name}')
         self.cmd('vmss extension show --resource-group {rg} --vmss-name {vmss} --name {ext_name}', checks=[
             self.check('name', '{ext_name}'),
-            self.check('type', '{ext_type}')
+            self.check('type1', '{ext_type}')
         ])
         self.cmd('vmss extension delete --resource-group {rg} --vmss-name {vmss} --name {ext_name}')
 
@@ -3427,11 +3427,13 @@ class VMGalleryImage(ScenarioTest):
         s1_id = self.cmd('snapshot create -g {rg} -n s1 --source d1').get_output_in_json()['id']
         s2_id = self.cmd('snapshot create -g {rg} -n s2 --source d2').get_output_in_json()['id']
         s3_id = self.cmd('snapshot create -g {rg} -n s3 --source d3').get_output_in_json()['id']
-        self.cmd('sig image-version create -g {rg} --gallery-name {gallery} --gallery-image-definition {image} --gallery-image-version 1.0.0 --os-snapshot s1 --data-snapshots s2 s3',
+        self.cmd('sig image-version create -g {rg} --gallery-name {gallery} --gallery-image-definition {image} --gallery-image-version 1.0.0 --os-snapshot s1 --data-snapshots s2 s3 --data-snapshot-luns 2 3',
                  checks=[
                      self.check('storageProfile.osDiskImage.source.id', s1_id),
                      self.check('storageProfile.dataDiskImages[0].source.id', s2_id),
                      self.check('storageProfile.dataDiskImages[1].source.id', s3_id),
+                     self.check('storageProfile.dataDiskImages[0].lun', 2),
+                     self.check('storageProfile.dataDiskImages[1].lun', 3)
                  ])
 # endregion
 
@@ -3455,6 +3457,13 @@ class ProximityPlacementGroupScenarioTest(ScenarioTest):
             self.check('name', '{ppg1}'),
             self.check('location', '{loc}'),
             self.check('proximityPlacementGroupType', 'Standard')
+        ])
+
+        self.cmd('ppg show -g {rg} -n {ppg1} --include-colocation-status', checks=[
+            self.check('name', '{ppg1}'),
+            self.check('location', '{loc}'),
+            self.check('proximityPlacementGroupType', 'Standard'),
+            self.exists('colocationStatus')
         ])
 
         self.cmd('ppg create -n {ppg2} -t ultra -g {rg}', checks=[
@@ -3495,6 +3504,42 @@ class ProximityPlacementGroupScenarioTest(ScenarioTest):
         self._assert_ids_equal(ppg_resource['availabilitySets'][0]['id'], self.kwargs['avset_id'], rg_prefix='cli_test_ppg_vm_vmss_')
         self._assert_ids_equal(ppg_resource['virtualMachines'][0]['id'], self.kwargs['vm_id'], rg_prefix='cli_test_ppg_vm_vmss_')
         self._assert_ids_equal(ppg_resource['virtualMachineScaleSets'][0]['id'], self.kwargs['vmss_id'], 'cli_test_ppg_vm_vmss_')
+
+    @ResourceGroupPreparer(name_prefix='cli_test_ppg_update_')
+    def test_ppg_update(self, resource_group):
+        self.kwargs.update({
+            'ppg': 'ppg1',
+            'vm': 'vm1',
+            'vmss': 'vmss1',
+            'avset': 'avset1',
+            'ssh_key': TEST_SSH_KEY_PUB
+        })
+
+        self.kwargs['ppg_id'] = self.cmd('ppg create -g {rg} -n {ppg} -t standard').get_output_in_json()['id']
+
+        self.cmd('vmss create -g {rg} -n {vmss} --image debian --admin-username debian --ssh-key-value \'{ssh_key}\'')
+        self.kwargs['vmss_id'] = self.cmd('vmss show -g {rg} -n {vmss}').get_output_in_json()['id']
+        self.cmd('vmss deallocate -g {rg} -n {vmss}')
+        time.sleep(30)
+        self.cmd('vmss update -g {rg} -n {vmss} --ppg {ppg_id}')
+
+        self.cmd('vm create -g {rg} -n {vm} --image debian --admin-username debian --ssh-key-value \'{ssh_key}\'')
+        self.kwargs['vm_id'] = self.cmd('vm show -g {rg} -n {vm}').get_output_in_json()['id']
+        self.cmd('vm deallocate -g {rg} -n {vm}')
+        time.sleep(30)
+        self.cmd('vm update -g {rg} -n {vm} --ppg {ppg_id}')
+
+        self.kwargs['avset_id'] = self.cmd('vm availability-set create -g {rg} -n {avset}').get_output_in_json()['id']
+        self.cmd('vm availability-set update -g {rg} -n {avset} --ppg {ppg_id}')
+
+        ppg_resource = self.cmd('ppg show -n {ppg} -g {rg}').get_output_in_json()
+
+        self._assert_ids_equal(ppg_resource['availabilitySets'][0]['id'], self.kwargs['avset_id'],
+                               rg_prefix='cli_test_ppg_update_')
+        self._assert_ids_equal(ppg_resource['virtualMachines'][0]['id'], self.kwargs['vm_id'],
+                               rg_prefix='cli_test_ppg_update_')
+        self._assert_ids_equal(ppg_resource['virtualMachineScaleSets'][0]['id'], self.kwargs['vmss_id'],
+                               'cli_test_ppg_update_')
 
     # it would be simpler to do the following:
     # self.assertEqual(ppg_resource['availabilitySets'][0]['id'].lower(), self.kwargs['avset_id'].lower())
@@ -3888,6 +3933,280 @@ class DiskEncryptionSetTest(ScenarioTest):
             self.check('key', '{kid2}'),
             self.check('vault', '{vault2}'),
         ])
+
+    @ResourceGroupPreparer(name_prefix='cli_test_disk_encryption_set_disk_update_', location='westcentralus')
+    @AllowLargeResponse(size_kb=99999)
+    def test_disk_encryption_set_disk_update(self, resource_group):
+        self.kwargs.update({
+            'vault': self.create_random_name(prefix='vault3-', length=20),
+            'key': self.create_random_name(prefix='key-', length=20),
+            'des1': self.create_random_name(prefix='des1-', length=20),
+            'disk': self.create_random_name(prefix='disk-', length=20),
+        })
+
+        vault_id = self.cmd('keyvault create -g {rg} -n {vault} --enable-purge-protection true --enable-soft-delete true').get_output_in_json()['id']
+        kid = self.cmd('keyvault key create -n {key} --vault {vault} --protection software').get_output_in_json()['key']['kid']
+        self.kwargs.update({
+            'vault_id': vault_id,
+            'kid': kid
+        })
+
+        self.cmd('disk-encryption-set create -g {rg} -n {des1} --key-url {kid} --source-vault {vault}')
+        des1_show_output = self.cmd('disk-encryption-set show -g {rg} -n {des1}').get_output_in_json()
+        des1_sp_id = des1_show_output['identity']['principalId']
+        des1_id = des1_show_output['id']
+        self.kwargs.update({
+            'des1_sp_id': des1_sp_id,
+            'des1_id': des1_id
+        })
+
+        self.cmd('keyvault set-policy -n {vault} --object-id {des1_sp_id} --key-permissions wrapKey unwrapKey get')
+
+        time.sleep(15)
+
+        with mock.patch('azure.cli.command_modules.role.custom._gen_guid', side_effect=self.create_guid):
+            self.cmd('role assignment create --assignee {des1_sp_id} --role Reader --scope {vault_id}')
+
+        time.sleep(15)
+
+        self.cmd('disk create -g {rg} -n {disk} --size-gb 10')
+        self.cmd('disk update -g {rg} -n {disk} --disk-encryption-set {des1} --encryption-type EncryptionAtRestWithCustomerKey', checks=[
+            self.check('encryption.diskEncryptionSetId', '{des1_id}', False),
+            self.check('encryption.type', 'EncryptionAtRestWithCustomerKey')
+        ])
+
+    @ResourceGroupPreparer(name_prefix='cli_test_disk_encryption_set_snapshot_', location='westcentralus')
+    @AllowLargeResponse(size_kb=99999)
+    def test_disk_encryption_set_snapshot(self, resource_group):
+        self.kwargs.update({
+            'vault': self.create_random_name(prefix='vault4-', length=20),
+            'key': self.create_random_name(prefix='key-', length=20),
+            'des1': self.create_random_name(prefix='des1-', length=20),
+            'des2': self.create_random_name(prefix='des2-', length=20),
+            'snapshot1': self.create_random_name(prefix='snapshot1-', length=20),
+            'snapshot2': self.create_random_name(prefix='snapshot2-', length=20),
+        })
+
+        vault_id = self.cmd('keyvault create -g {rg} -n {vault} --enable-purge-protection true --enable-soft-delete true').get_output_in_json()['id']
+        kid = self.cmd('keyvault key create -n {key} --vault {vault} --protection software').get_output_in_json()['key']['kid']
+        self.kwargs.update({
+            'vault_id': vault_id,
+            'kid': kid
+        })
+
+        self.cmd('disk-encryption-set create -g {rg} -n {des1} --key-url {kid} --source-vault {vault}')
+        des1_show_output = self.cmd('disk-encryption-set show -g {rg} -n {des1}').get_output_in_json()
+        des1_sp_id = des1_show_output['identity']['principalId']
+        des1_id = des1_show_output['id']
+        self.kwargs.update({
+            'des1_sp_id': des1_sp_id,
+            'des1_id': des1_id
+        })
+
+        self.cmd('disk-encryption-set create -g {rg} -n {des2} --key-url {kid} --source-vault {vault}')
+        des2_show_output = self.cmd('disk-encryption-set show -g {rg} -n {des2}').get_output_in_json()
+        des2_sp_id = des2_show_output['identity']['principalId']
+        des2_id = des2_show_output['id']
+        self.kwargs.update({
+            'des2_sp_id': des2_sp_id,
+            'des2_id': des2_id
+        })
+
+        self.cmd('keyvault set-policy -n {vault} --object-id {des1_sp_id} --key-permissions wrapKey unwrapKey get')
+        self.cmd('keyvault set-policy -n {vault} --object-id {des2_sp_id} --key-permissions wrapKey unwrapKey get')
+
+        time.sleep(15)
+
+        with mock.patch('azure.cli.command_modules.role.custom._gen_guid', side_effect=self.create_guid):
+            self.cmd('role assignment create --assignee {des1_sp_id} --role Reader --scope {vault_id}')
+            self.cmd('role assignment create --assignee {des2_sp_id} --role Reader --scope {vault_id}')
+
+        time.sleep(15)
+
+        self.cmd('snapshot create -g {rg} -n {snapshot1} --encryption-type EncryptionAtRestWithCustomerKey --disk-encryption-set {des1} --size-gb 10', checks=[
+            self.check('encryption.diskEncryptionSetId', '{des1_id}', False),
+            self.check('encryption.type', 'EncryptionAtRestWithCustomerKey')
+        ])
+
+        self.cmd('snapshot create -g {rg} -n {snapshot2} --size-gb 10')
+
+        self.cmd('snapshot update -g {rg} -n {snapshot2} --encryption-type EncryptionAtRestWithCustomerKey --disk-encryption-set {des2}', checks=[
+            self.check('encryption.diskEncryptionSetId', '{des2_id}', False)
+        ])
+
+
+class VMSSCreateDiskOptionTest(ScenarioTest):
+
+    @ResourceGroupPreparer(name_prefix='cli_test_vmss_create_disk_iops_mbps_', location='eastus')
+    @AllowLargeResponse(size_kb=99999)
+    def test_vmss_create_disk_iops_mbps(self, resource_group):
+        self.kwargs.update({
+            'vmss': 'vmss1'
+        })
+
+        self.cmd('vmss create -g {rg} -n {vmss} --image debian --data-disk-sizes-gb 10 10 --data-disk-iops 555 666 '
+                 '--data-disk-mbps 77 88 --ultra-ssd-enabled --zone 1 --vm-sku Standard_D2s_v3 '
+                 '--storage-sku UltraSSD_LRS --location eastus',
+                 checks=[
+                     self.check('vmss.virtualMachineProfile.storageProfile.dataDisks[0].diskIOPSReadWrite', '555'),
+                     self.check('vmss.virtualMachineProfile.storageProfile.dataDisks[1].diskIOPSReadWrite', '666'),
+                     self.check('vmss.virtualMachineProfile.storageProfile.dataDisks[0].diskMBpsReadWrite', '77'),
+                     self.check('vmss.virtualMachineProfile.storageProfile.dataDisks[1].diskMBpsReadWrite', '88')
+                 ])
+
+        self.cmd('vmss update -g {rg} -n {vmss} --set '
+                 'virtualMachineProfile.storageProfile.dataDisks[0].diskIOPSReadWrite=444 '
+                 'virtualMachineProfile.storageProfile.dataDisks[1].diskIOPSReadWrite=555 '
+                 'virtualMachineProfile.storageProfile.dataDisks[0].diskMBpsReadWrite=66 '
+                 'virtualMachineProfile.storageProfile.dataDisks[1].diskMBpsReadWrite=77 ',
+                 checks=[
+                     self.check('virtualMachineProfile.storageProfile.dataDisks[0].diskIopsReadWrite', '444'),
+                     self.check('virtualMachineProfile.storageProfile.dataDisks[1].diskIopsReadWrite', '555'),
+                     self.check('virtualMachineProfile.storageProfile.dataDisks[0].diskMbpsReadWrite', '66'),
+                     self.check('virtualMachineProfile.storageProfile.dataDisks[1].diskMbpsReadWrite', '77'),
+                 ])
+
+
+class VMCreateAutoCreateSubnetScenarioTest(ScenarioTest):
+
+    @ResourceGroupPreparer(name_prefix='cli_test_vm_subnet')
+    def test_vm_create_auto_create_subnet(self, resource_group):
+
+        self.kwargs.update({
+            'loc': 'eastus',
+            'vm': 'vm-subnet',
+            'vnet': 'myvnet'
+        })
+
+        # Expecting no results
+        self.cmd('vm list --resource-group {rg}',
+                 checks=self.is_empty())
+        self.cmd('network vnet list --resource-group {rg}',
+                 checks=self.is_empty())
+
+        self.cmd('network vnet create --resource-group {rg} --name {vnet} --location {loc}')
+        self.cmd('vm create --resource-group {rg} --location {loc} --name {vm} --admin-username ubuntu --image UbuntuLTS --admin-password testPassword0 --authentication-type password --vnet-name {vnet}')
+
+        # Expecting one result, the one we created
+        self.cmd('vm list --resource-group {rg}', checks=[
+            self.check('length(@)', 1),
+            self.check('[0].resourceGroup', '{rg}'),
+            self.check('[0].name', '{vm}'),
+            self.check('[0].location', '{loc}')
+        ])
+
+        self.cmd('network vnet show --resource-group {rg} --name {vnet}', checks=[
+            self.check('subnets[0].name', '{vm}Subnet')
+        ])
+
+
+class VMSSAutomaticRepairsScenarioTest(ScenarioTest):
+
+    @ResourceGroupPreparer(name_prefix='cli_test_vmss_create_automatic_repairs_with_health_probe_')
+    def test_vmss_create_automatic_repairs_with_health_probe(self, resource_group):
+        self.kwargs.update({
+            'vmss': 'vmss1',
+            'lb': 'lb1',
+            'probe': 'probe',
+            'lbrule': 'lbrule'
+        })
+
+        # Test raise error if not provide health probe or load balance
+        with self.assertRaises(CLIError):
+            self.cmd('vmss create -g {rg} -n {vmss} --image UbuntuLTS --automatic-repairs-grace-period 30')
+        with self.assertRaises(CLIError):
+            self.cmd('vmss create -g {rg} -n {vmss} --image UbuntuLTS --load-balancer {lb} --automatic-repairs-grace-period 30')
+        with self.assertRaises(CLIError):
+            self.cmd('vmss create -g {rg} -n {vmss} --image UbuntuLTS --health-probe {probe} --automatic-repairs-grace-period 30')
+
+        # Prepare health probe
+        self.cmd('network lb create -g {rg} -n {lb}')
+        self.cmd('network lb probe create -g {rg} --lb-name {lb} -n {probe} --protocol Tcp --port 80')
+        self.cmd('network lb rule create -g {rg} --lb-name {lb} -n {lbrule} --probe-name {probe} --protocol Tcp --frontend-port 80 --backend-port 80')
+        # Test enable automatic repairs with a health probe when create vmss
+        self.cmd('vmss create -g {rg} -n {vmss} --image UbuntuLTS --load-balancer {lb} --health-probe {probe} --automatic-repairs-grace-period 30',
+                 checks=[
+                     self.check('vmss.automaticRepairsPolicy.enabled', True),
+                     self.check('vmss.automaticRepairsPolicy.gracePeriod', 'PT30M')
+                 ])
+
+    @ResourceGroupPreparer(name_prefix='cli_test_vmss_update_automatic_repairs_with_health_probe_')
+    def test_vmss_update_automatic_repairs_with_health_probe(self, resource_group):
+        self.kwargs.update({
+            'vmss': 'vmss1',
+            'probe': 'probe',
+            'lbrule': 'lbrule'
+        })
+
+        # Prepare vmss
+        self.cmd('vmss create -g {rg} -n {vmss} --image UbuntuLTS')
+
+        # Validate automatic repairs parameters
+        with self.assertRaises(CLIError):
+            self.cmd(
+                'vmss update -g {rg} -n {vmss} --enable-automatic-repairs false --automatic-repairs-grace-period 30')
+        with self.assertRaises(CLIError):
+            self.cmd('vmss update -g {rg} -n {vmss} --enable-automatic-repairs true')
+
+        # Prepare health probe
+        self.kwargs['probe_id'] = self.cmd(
+            'network lb probe create -g {rg} --lb-name {vmss}LB -n {probe} --protocol Tcp --port 80'
+        ).get_output_in_json()['id']
+        self.cmd(
+            'network lb rule create -g {rg} --lb-name {vmss}LB -n {lbrule} --probe-name {probe} --protocol Tcp '
+            '--frontend-port 80 --backend-port 80'
+        )
+        # Test enable automatic repairs with a health probe when update vmss
+        self.cmd('vmss update -g {rg} -n {vmss} --set virtualMachineProfile.networkProfile.healthProbe.id={probe_id}',
+                 checks=[
+                     self.check('virtualMachineProfile.networkProfile.healthProbe.id', self.kwargs['probe_id'])
+                 ])
+        self.kwargs['instance_ids'] = ' '.join(
+            self.cmd('vmss list-instances -g {rg} -n {vmss} --query "[].instanceId"').get_output_in_json()
+        )
+        self.cmd('vmss update-instances -g {rg} -n {vmss} --instance-ids {instance_ids}')
+        self.cmd('vmss update -g {rg} -n {vmss} --enable-automatic-repairs true --automatic-repairs-grace-period 30',
+                 checks=[
+                     self.check('automaticRepairsPolicy.enabled', True),
+                     self.check('automaticRepairsPolicy.gracePeriod', 'PT30M')
+                 ])
+
+    @ResourceGroupPreparer(name_prefix='cli_test_vmss_update_automatic_repairs_with_health_extension_')
+    def test_vmss_update_automatic_repairs_with_health_extension(self, resource_group):
+        self.kwargs.update({
+            'vmss': 'vmss1'
+        })
+
+        # Prepare vmss
+        self.cmd('vmss create -g {rg} -n {vmss} --image UbuntuLTS')
+
+        # Prepare health extension
+        _, settings_file = tempfile.mkstemp()
+        with open(settings_file, 'w') as outfile:
+            json.dump({
+                "port": 80,
+                "protocol": "http",
+                "requestPath": "/"
+            }, outfile)
+        settings_file = settings_file.replace('\\', '\\\\')
+        self.kwargs['settings'] = settings_file
+        self.cmd(
+            'vmss extension set -g {rg} --vmss-name {vmss} '
+            '--name ApplicationHealthLinux --version 1.0 '
+            '--publisher Microsoft.ManagedServices '
+            '--settings {settings}'
+        )
+
+        # Test enable automatic repairs with a health extension when update vmss
+        self.kwargs['instance_ids'] = ' '.join(
+            self.cmd('vmss list-instances -g {rg} -n {vmss} --query "[].instanceId"').get_output_in_json()
+        )
+        self.cmd('vmss update-instances -g {rg} -n {vmss} --instance-ids {instance_ids}')
+        self.cmd('vmss update -g {rg} -n {vmss} --enable-automatic-repairs true --automatic-repairs-grace-period 30',
+                 checks=[
+                     self.check('automaticRepairsPolicy.enabled', True),
+                     self.check('automaticRepairsPolicy.gracePeriod', 'PT30M')
+                 ])
 
 
 if __name__ == '__main__':

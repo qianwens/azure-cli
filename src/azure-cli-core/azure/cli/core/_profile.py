@@ -596,8 +596,18 @@ class Profile(object):
                                              _retrieve_tokens_from_external_tenants if external_tenants_info else None)
         else:
             if self._msi_creds is None:
-                self._msi_creds = MsiAccountTypes.msi_auth_factory(identity_type, identity_id, resource)
-            auth_object = self._msi_creds
+                # MSAL : msi
+                def _retrieve_token_msi():
+                    from azure.identity import AuthenticationRequiredError, ManagedIdentityCredential
+                    # msi_cred = MSIAuthentication(resource=resource)
+                    msi_cred = ManagedIdentityCredential()
+                    token_entry = msi_cred.get_token('https://management.azure.com/.default')
+                    # token_entry = sp_auth.acquire_token(context, resource, sp_id)
+                    return 'Bearer', token_entry.token, token_entry
+                # self._msi_creds = MsiAccountTypes.msi_auth_factory(identity_type, identity_id, resource)
+                from azure.cli.core.adal_authentication import AdalAuthentication
+                auth_object = AdalAuthentication(_retrieve_token_msi,
+                                                 _retrieve_token_msi if external_tenants_info else None)
 
         return (auth_object,
                 str(account[_SUBSCRIPTION_ID]),

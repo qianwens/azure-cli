@@ -349,11 +349,11 @@ class Profile(object):
         else:
             # msal : msi
             identity_type = MsiAccountTypes.system_assigned
-            from azure.identity import AuthenticationRequiredError, MsiCredential
-            # msi_creds = MSIAuthentication(resource=resource)
-            msi_creds = MsiCredential()
+            from azure.identity import AuthenticationRequiredError, ManagedIdentityCredential
+            # msi_cred = MSIAuthentication(resource=resource)
+            msi_cred = ManagedIdentityCredential()
 
-        token_entry = msi_creds.get_token()
+        token_entry = msi_cred.get_token('https://management.azure.com/.default')
         token = token_entry.token
         logger.info('MSI: token was retrieved. Now trying to initialize local accounts...')
         decode = jwt.decode(token, verify=False, algorithms=['RS256'])

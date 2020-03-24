@@ -597,6 +597,7 @@ class Profile(object):
         else:
             if self._msi_creds is None:
                 # MSAL : msi
+                logger.warning("MSAL : msi")
                 def _retrieve_token_msi():
                     from azure.identity import AuthenticationRequiredError, ManagedIdentityCredential
                     # msi_cred = MSIAuthentication(resource=resource)

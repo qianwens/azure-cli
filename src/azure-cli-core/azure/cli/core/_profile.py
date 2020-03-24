@@ -78,6 +78,7 @@ _ASSIGNED_IDENTITY_INFO = 'assignedIdentityInfo'
 
 _AZ_LOGIN_MESSAGE = "Please run 'az login' to setup account."
 
+_PROFILE_PATH = 'D:\\qianwen\\temp\\profile.json'
 
 def load_subscriptions(cli_ctx, all_clouds=False, refresh=False):
     profile = Profile(cli_ctx=cli_ctx)
@@ -102,6 +103,11 @@ def _authentication_context_factory(cli_ctx, tenant, cache):
     authority_url, is_adfs = _get_authority_url(cli_ctx, tenant)
     return adal.AuthenticationContext(authority_url, cache=cache, api_version=None, validate_authority=(not is_adfs))
 
+
+def _msal_authentication_context_factory(cli_ctx, tenant, cache):
+    #import MSAL
+    authority_url, is_adfs = _get_authority_url(cli_ctx, tenant)
+    return adal.AuthenticationContext(authority_url, cache=cache, api_version=None, validate_authority=(not is_adfs))
 
 _AUTH_CTX_FACTORY = _authentication_context_factory
 
@@ -184,6 +190,7 @@ class Profile(object):
             subscription_finder = SubscriptionFinder(self.cli_ctx,
                                                      self.auth_ctx_factory,
                                                      self._creds_cache.adal_token_cache)
+        # MSAL : login
         if interactive:
             if not use_device_code and (in_cloud_console() or not can_launch_browser()):
                 logger.info('Detect no GUI is available, so fall back to device code')
@@ -194,6 +201,7 @@ class Profile(object):
                     authority_url, _ = _get_authority_url(self.cli_ctx, tenant)
                     subscriptions = subscription_finder.find_through_authorization_code_flow(
                         tenant, self._ad_resource_uri, authority_url)
+
                 except RuntimeError:
                     use_device_code = True
                     logger.warning('Not able to launch a browser to log you in, falling back to device code...')
@@ -339,11 +347,14 @@ class Profile(object):
                     raise CLIError('Failed to connect to MSI, check your managed service identity id.')
 
         else:
+            # msal : msi
             identity_type = MsiAccountTypes.system_assigned
-            msi_creds = MSIAuthentication(resource=resource)
+            from azure.identity import AuthenticationRequiredError, MsiCredential
+            # msi_creds = MSIAuthentication(resource=resource)
+            msi_creds = MsiCredential()
 
-        token_entry = msi_creds.token
-        token = token_entry['access_token']
+        token_entry = msi_creds.get_token()
+        token = token_entry.token
         logger.info('MSI: token was retrieved. Now trying to initialize local accounts...')
         decode = jwt.decode(token, verify=False, algorithms=['RS256'])
         tenant = decode['tid']
@@ -560,8 +571,10 @@ class Profile(object):
                 if in_cloud_console() and account[_USER_ENTITY].get(_CLOUD_SHELL_ID):
                     return self._get_token_from_cloud_shell(resource)
                 if user_type == _USER:
-                    return self._creds_cache.retrieve_token_for_user(username_or_sp_id,
-                                                                     account[_TENANT_ID], resource)
+                    # msal : get token
+                    return self._creds_cache.retrieve_msal_token_for_user(username_or_sp_id,
+                                                                          account[_TENANT_ID], account['environment'],
+                                                                          account['home_account_id'], resource)
                 use_cert_sn_issuer = account[_USER_ENTITY].get(_SERVICE_PRINCIPAL_CERT_SN_ISSUER_AUTH)
                 return self._creds_cache.retrieve_token_for_service_principal(username_or_sp_id, resource,
                                                                               account[_TENANT_ID],
@@ -814,21 +827,39 @@ class SubscriptionFinder(object):
 
     def find_through_authorization_code_flow(self, tenant, resource, authority_url):
         # launch browser and get the code
-        results = _get_authorization_code(resource, authority_url)
+        # results = _get_authorization_code(resource, authority_url)
+        #
+        # if not results.get('code'):
+        #     raise CLIError('Login failed')  # error detail is already displayed through previous steps
+        #
+        # # exchange the code for the token
+        # context = self._create_auth_context(tenant)
+        # token_entry = context.acquire_token_with_authorization_code(results['code'], results['reply_url'],
+        #                                                             resource, _CLIENT_ID, None)
 
-        if not results.get('code'):
-            raise CLIError('Login failed')  # error detail is already displayed through previous steps
+        # MSAL: get token
+        # Question: authority url in azure.identity _get_authorization_code
+        from azure.identity import AuthenticationRequiredError, InteractiveBrowserCredential
+        credential, profile = InteractiveBrowserCredential.authenticate(
+           # silent_auth_only=True
+            scope = 'https://management.azure.com/.default',
+            tenant_id = tenant
+        )
 
-        # exchange the code for the token
-        context = self._create_auth_context(tenant)
-        token_entry = context.acquire_token_with_authorization_code(results['code'], results['reply_url'],
-                                                                    resource, _CLIENT_ID, None)
-        self.user_id = token_entry[_TOKEN_ENTRY_USER_ID]
+        # serialize the profile to JSON, including all keyword arguments
+        profile_json = profile.serialize(extra='args', serialized='also')
+        with open(_PROFILE_PATH, 'w') as f:
+            f.write(profile_json)
+
+        token_entry = credential.get_token('https://management.azure.com/.default')
+        self.user_id = profile.username
+
+        # self.user_id = token_entry[_TOKEN_ENTRY_USER_ID]
         logger.warning("You have logged in. Now let us find all the subscriptions to which you have access...")
         if tenant is None:
-            result = self._find_using_common_tenant(token_entry[_ACCESS_TOKEN], resource)
+            result = self._find_using_common_tenant(token_entry.token, resource)
         else:
-            result = self._find_using_specific_tenant(tenant, token_entry[_ACCESS_TOKEN])
+            result = self._find_using_specific_tenant(tenant, token_entry.token)
         return result
 
     def find_through_interactive_flow(self, tenant, resource):
@@ -844,10 +875,15 @@ class SubscriptionFinder(object):
         return result
 
     def find_from_service_principal_id(self, client_id, sp_auth, tenant, resource):
-        context = self._create_auth_context(tenant, False)
-        token_entry = sp_auth.acquire_token(context, resource, client_id)
+        # context = self._create_auth_context(tenant, False)
+        # msal
+        from azure.identity import AuthenticationRequiredError, ClientSecretCredential
+        sp_cred = ClientSecretCredential(tenant, client_id, sp_auth.secret)
+
+        token_entry = sp_cred.get_token('https://management.azure.com/.default')
+
         self.user_id = client_id
-        result = self._find_using_specific_tenant(tenant, token_entry[_ACCESS_TOKEN])
+        result = self._find_using_specific_tenant(tenant, token_entry.token)
         self.tenants = [tenant]
         return result
 
@@ -976,6 +1012,38 @@ class CredsCache(object):
             self.persist_cached_creds()
         return (token_entry[_TOKEN_ENTRY_TOKEN_TYPE], token_entry[_ACCESS_TOKEN], token_entry)
 
+    def _create_scopes(self, cli_ctx, resource=None):
+        resource = resource or cli_ctx.cloud.endpoints.resource_manager
+        scope = resource.rstrip('/') + '/.default'
+        return scope
+
+    def retrieve_msal_token_for_user(self, username, tenant, environment, home_account_id, resource):
+        # context = self._auth_ctx_factory(self._ctx, tenant, cache=self.adal_token_cache)
+        # token_entry = context.acquire_token(resource, username, _CLIENT_ID)
+        # if not token_entry:
+        #     raise CLIError("Could not retrieve token from local cache.{}".format(
+        #         " Please run 'az login'." if not in_cloud_console() else ''))
+        #
+        # if self.adal_token_cache.has_state_changed:
+        #     self.persist_cached_creds()
+        from azure.identity import (
+            AuthenticationRequiredError,
+            AuthProfile,
+            SharedTokenCacheCredential
+        )
+
+        auth_profile = AuthProfile(environment, home_account_id, tenant, username)
+        credential = SharedTokenCacheCredential(profile=auth_profile)
+
+        try:
+            # pass the credential to some client, which eventually requests a token
+            scope = self._create_scopes(self._ctx, resource)
+            token_entry = credential.get_token(scope)
+        except AuthenticationRequiredError:
+            raise CLIError("Could not retrieve token from local cache.{}".format(
+                " Please run 'az login'." if not in_cloud_console() else ''))
+        return 'Bearer', token_entry.token, token_entry
+
     def retrieve_token_for_service_principal(self, sp_id, resource, tenant, use_cert_sn_issuer=False):
         self.load_adal_token_cache()
         matched = [x for x in self._service_principal_creds if sp_id == x[_SERVICE_PRINCIPAL_ID]]
@@ -991,13 +1059,17 @@ class CredsCache(object):
                            "Trying credential under tenant %s, assuming that is an app credential.",
                            sp_id, tenant, matched[0][_SERVICE_PRINCIPAL_TENANT])
             cred = matched[0]
-
-        context = self._auth_ctx_factory(self._ctx, tenant, None)
+        # msal
+        # context = self._auth_ctx_factory(self._ctx, tenant, None)
         sp_auth = ServicePrincipalAuth(cred.get(_ACCESS_TOKEN, None) or
-                                       cred.get(_SERVICE_PRINCIPAL_CERT_FILE, None),
-                                       use_cert_sn_issuer)
-        token_entry = sp_auth.acquire_token(context, resource, sp_id)
-        return (token_entry[_TOKEN_ENTRY_TOKEN_TYPE], token_entry[_ACCESS_TOKEN], token_entry)
+                                        cred.get(_SERVICE_PRINCIPAL_CERT_FILE, None),
+                                        use_cert_sn_issuer)
+        from azure.identity import AuthenticationRequiredError, ClientSecretCredential
+        sp_cred = ClientSecretCredential(tenant, sp_id, sp_auth.secret)
+
+        token_entry = sp_cred.get_token('https://management.azure.com/.default')
+        # token_entry = sp_auth.acquire_token(context, resource, sp_id)
+        return 'Bearer', token_entry.token, token_entry
 
     def retrieve_secret_of_service_principal(self, sp_id):
         self.load_adal_token_cache()

@@ -103,7 +103,7 @@ def account_clear(cmd):
 
 # pylint: disable=inconsistent-return-statements
 def login(cmd, username=None, password=None, service_principal=None, tenant=None, allow_no_subscriptions=False,
-          identity=False, use_device_code=False, use_cert_sn_issuer=None, auth_only=False):
+          identity=False, use_device_code=False, use_cert_sn_issuer=None):
     """Log in to access Azure subscriptions"""
     from adal.adal_error import AdalError
     import requests
@@ -125,7 +125,7 @@ def login(cmd, username=None, password=None, service_principal=None, tenant=None
     if identity:
         if in_cloud_console():
             return profile.find_subscriptions_in_cloud_console()
-        return profile.login_with_managed_identity(username, allow_no_subscriptions)
+        return profile.find_subscriptions_in_vm_with_msi(username, allow_no_subscriptions)
     if in_cloud_console():  # tell users they might not need login
         logger.warning(_CLOUD_CONSOLE_LOGIN_WARNING)
 
@@ -139,7 +139,7 @@ def login(cmd, username=None, password=None, service_principal=None, tenant=None
         interactive = True
 
     try:
-        subscriptions = profile.login(
+        subscriptions = profile.find_subscriptions_on_login(
             interactive,
             username,
             password,
@@ -147,7 +147,7 @@ def login(cmd, username=None, password=None, service_principal=None, tenant=None
             tenant,
             use_device_code=use_device_code,
             allow_no_subscriptions=allow_no_subscriptions,
-            use_cert_sn_issuer=use_cert_sn_issuer, find_subscriptions=not auth_only)
+            use_cert_sn_issuer=use_cert_sn_issuer)
     except AdalError as err:
         # try polish unfriendly server errors
         if username:

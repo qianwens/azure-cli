@@ -47,5 +47,6 @@ def change_ssl_cert_verification_track2():
     return client_kwargs
 
 
-def msal_connection_verify():
-    return not should_disable_connection_verify()
+def allow_debug_adal_connection():
+    if should_disable_connection_verify():
+        os.environ[ADAL_PYTHON_SSL_NO_VERIFY] = '1'

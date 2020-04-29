@@ -6,7 +6,7 @@
 from azure.cli.testsdk import ScenarioTest, ResourceGroupPreparer
 
 
-class IoTCentralTestDeprecated(ScenarioTest):
+class IoTCentralTest(ScenarioTest):
 
     @ResourceGroupPreparer()  # name_prefix not required, but can be useful
     def test_iotcentral_app(self, resource_group, resource_group_location):
@@ -15,7 +15,7 @@ class IoTCentralTestDeprecated(ScenarioTest):
         template_app_display_name = "My Custom App Display Name"
         rg = resource_group
         location = resource_group_location
-        template = 'iotc-pnp-preview@1.0.0'
+        template = 'iotc-pnp-preview'
         updatedName = app_name + 'update'
 
         # Test 'az iotcentral app create'

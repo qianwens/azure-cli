@@ -126,9 +126,11 @@ class Identity:
             self._cred_cache.add_credential(credential)
             return credential, auth_record
         except ValueError as ex:
+            logger.debug('Device code authentication failed: %s', str(ex))
             if 'PyGObject' in str(ex):
                 raise CLIError("PyGObject is required to encrypt the persistent cache. Please install that lib or "
                                "allow fallback to plaintext if encrypt credential fail via 'az configure'.")
+            raise
 
     def login_with_username_password(self, username, password):
         # Use UsernamePasswordCredential

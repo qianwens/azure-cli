@@ -113,14 +113,14 @@ class Identity:
             # expires_on is discarded
             logger.warning("To sign in, use a web browser to open the page %s and enter the code %s to authenticate.",
                            verification_uri, user_code)
-
-        credential = DeviceCodeCredential(authority=self.authority,
-                                          tenant_id=self.tenant_id,
-                                          client_id=self.client_id,
-                                          enable_persistent_cache=True,
-                                          prompt_callback=prompt_callback,
-                                          allow_unencrypted_cache=self.allow_unencrypted)
         try:
+            credential = DeviceCodeCredential(authority=self.authority,
+                                              tenant_id=self.tenant_id,
+                                              client_id=self.client_id,
+                                              enable_persistent_cache=True,
+                                              prompt_callback=prompt_callback,
+                                              allow_unencrypted_cache=self.allow_unencrypted)
+
             auth_record = credential.authenticate()
         except ValueError as ex:
             if 'PyGObject' in ex.message:

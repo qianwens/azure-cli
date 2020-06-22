@@ -123,7 +123,7 @@ class Identity:
 
             auth_record = credential.authenticate()
         except ValueError as ex:
-            if 'PyGObject' in ex.message:
+            if 'PyGObject' in str(ex):
                 raise CLIError("PyGObject is required to encrypt the persistent cache. Please install that lib or"
                                "allow fallback to plaintext if encrypt credential fail in 'az configure'.")
         # todo: remove after ADAL token deprecation

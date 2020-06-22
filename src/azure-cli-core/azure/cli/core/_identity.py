@@ -120,7 +120,12 @@ class Identity:
                                           enable_persistent_cache=True,
                                           prompt_callback=prompt_callback,
                                           allow_unencrypted_cache=self.allow_unencrypted)
-        auth_record = credential.authenticate()
+        try:
+            auth_record = credential.authenticate()
+        except ValueError as ex:
+            if 'PyGObject' in ex.message:
+                raise CLIError("PyGObject is required to encrypt the persistent cache. Please install that lib or"
+                               "allow fallback to plaintext if encrypt credential fail in 'az configure'.")
         # todo: remove after ADAL token deprecation
         self._cred_cache.add_credential(credential)
         return credential, auth_record

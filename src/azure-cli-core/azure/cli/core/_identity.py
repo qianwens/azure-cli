@@ -69,8 +69,7 @@ class Identity:
         self.tenant_id = tenant_id or "organizations"
         self.client_id = client_id or _CLIENT_ID
         self._cred_cache = kwargs.pop('cred_cache', None)
-        # todo: MSAL support force encryption
-        self.allow_unencrypted = True
+        self.allow_unencrypted = kwargs.pop('allow_unencrypted', True)
 
         # Store for Service principal credential persistence
         self._msal_store = MSALSecretStore(fallback_to_plaintext=self.allow_unencrypted)
@@ -628,13 +627,13 @@ class MSALSecretStore:
             return FilePersistenceWithDataProtection(self._token_file)
         if sys.platform.startswith('darwin'):
             # todo: support darwin
-            return KeychainPersistence(self._token_file, "my_service_name", "my_account_name")
+            return KeychainPersistence(self._token_file, "Microsoft.Developer.IdentityService", "MSALCustomCache")
         if sys.platform.startswith('linux'):
             try:
                 return LibsecretPersistence(
                     self._token_file,
-                    schema_name="msalCustomToken",
-                    attributes={"MsalClientID": "Microsoft.Developer.IdentityService"},
+                    schema_name="MSALCustomToken",
+                    attributes={"MsalClientID": "Microsoft.Developer.IdentityService"}
                 )
             except:  # pylint: disable=bare-except
                 if not self._fallback_to_plaintext:
